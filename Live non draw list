@@ -1,0 +1,113 @@
+with tran_live_status as(
+with live_status as(
+with s1 as (
+select 	reporting_period,
+       	surr_id,
+       	case when fuel_live_account = 'TRUE' then '1'
+       	else '0'
+       	end as status
+from 	customer_isoweekly_account_status
+where 	fuel_live_account = 'TRUE'),
+s2 as (
+select 	date_trunc('month',caldate) as calmonth,
+       	isowk
+from 	calendar
+where 	caldate = date_add('day',-1,date_trunc('month',getdate()))),
+s3 as (
+select 	surr_id,
+       	date_trunc('month',start_date) as start_month,
+       	cohort_country
+from customers
+where cohort_account_type = 'PAYGO')
+select
+	s2.calmonth,
+	s1.surr_id,
+	s3.start_month,
+	s1.status,
+	case when cohort_country = 'Northern Ireland' then 'Ireland'
+	when cohort_country = 'Sweden' then 'Scandinavia'
+	when cohort_country = 'Denmark' then 'Scandinavia'
+	else cohort_country
+	end as country_fix
+from s1 
+inner join s2 
+on s1.reporting_period = s2.isowk
+left join s3
+on s1.surr_id = s3.surr_id
+where country_fix NOT IN ('US','Australia')),
+transactionFY22 as (
+select
+	cust_surr_id ,
+	date_trunc('month',tran_date) as tran_month,
+	quantity
+from transactions
+where tran_month = date_trunc('month',date_add('month',-1,getdate()))
+and product_name IN 
+('DIESEL','UNLEADED','PREMIUM DIESEL',
+'PREMIUM UNLEADED','SUPER UNLEADED')
+and deleted_date is null),
+live_status1 as (
+select
+	l.calmonth,
+	l.surr_id,
+	l.start_month,
+	l.status,
+	l.country_fix,
+	sum(t.quantity) as calmonth_volumn
+from live_status as l
+left join transactionFY22 as t
+on l.surr_id = t.cust_surr_id
+group by
+	l.surr_id,
+	l.start_month,
+	l.status,
+	l.country_fix,
+	l.calmonth)
+select
+	calmonth,
+	surr_id,
+	start_month,
+	status,
+	country_fix,
+	calmonth_volumn,
+	case when calmonth_volumn > 0  then 'Live Active'
+	else 'Live Non Draw'
+	end as live_status
+from live_status1),
+tran_data as (
+select
+	cust_surr_id,
+	date_trunc('month',max(tran_date) over(partition by cust_surr_id)) as latest_tran_month,
+	date_trunc('month',tran_date) as tran_month,
+	quantity
+from transactions
+where product_name IN 
+('DIESEL','UNLEADED','PREMIUM DIESEL',
+'PREMIUM UNLEADED','SUPER UNLEADED')
+and deleted_date is null
+and tran_date < date_trunc('month',getdate()))
+select
+	t1.*,
+	t2.latest_tran_month,
+	t3.tran_month,
+	sum(t3.quantity) as volumn,
+	max(volumn) over(partition by surr_id) as max_volumn
+from tran_live_status as t1
+left join tran_data as t2 
+on t1.surr_id = t2.cust_surr_id
+and t2.latest_tran_month = t2.tran_month
+and t1.live_status = 'Live Non Draw'
+left join tran_data as t3
+on t1.surr_id = t3.cust_surr_id
+and t3.tran_month >= '04-01-2021'
+and t1.live_status = 'Live Non Draw'
+group by
+	t1.calmonth,
+	t1.surr_id,
+	t1.start_month,
+	t1.country_fix,
+	t1.status,
+	t1.calmonth_volumn,
+	t2.latest_tran_month,
+	t3.tran_month,
+	t1.live_status
