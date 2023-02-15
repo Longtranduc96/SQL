@@ -1,0 +1,180 @@
+with FY24 as (
+select
+	t.cust_surr_id,
+	date_trunc('month',tran_date) as tran_month,
+	date_trunc('month',start_date) as start_month,
+	CASE WHEN c.surr_id = 2309124380001 THEN NULL
+	WHEN c.surr_id = 23011045650001 THEN NULL
+ 	WHEN c.cohort_account_type = 'PAYGO' and c.cohort_country = 'Ireland' THEN 'Ireland'
+ 	WHEN c.cohort_account_type = 'PAYGO' and c.cohort_country = 'Northern Ireland' THEN 'Ireland'
+ 	WHEN c.cohort_account_type = 'PAYGO' and c.cohort_country = 'UK' AND c.country = 'Ireland' and c.brand_no  = 2 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'PAYGO' and c.cohort_country = 'UK' AND t.iso_country_code = 'IE' and c.brand_no  = 20 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'Distributor' AND t.iso_country_code = 'IE' AND c.surr_id = 2202819060001 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'Distributor' AND t.iso_country_code = 'IE' AND c.surr_id = 2202819080001 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'Distributor' AND t.iso_country_code = 'IE' AND c.surr_id = 2202819100001 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'Distributor' AND t.iso_country_code = 'IE' AND c.surr_id = 2202819130001 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'Distributor' AND t.iso_country_code = 'IE' AND c.surr_id = 2202819420001 THEN 'Ireland'
+	WHEN c.cohort_account_type = 'Distributor' AND t.iso_country_code = 'IE' AND c.surr_id = 2204696540001 THEN 'Ireland'
+	WHEN t.iso_country_code = 'IE' AND c.surr_id = 2021892300001 AND ca.iso_no = 789712 THEN NULL
+	WHEN t.iso_country_code = 'GB' AND c.surr_id = 2021892300001 AND ca.iso_no = 789712 THEN Null
+	WHEN c.cohort_account_type = 'PAYGO' AND c.cohort_country = 'Denmark' THEN 'Scandinavia'
+	WHEN c.cohort_account_type = 'PAYGO' AND c.cohort_country = 'Sweden' THEN 'Scandinavia'
+	WHEN c.cohort_account_type IN('PAYGO','EV - PAYGO')THEN c.cohort_country
+	WHEN c.dist_no = 593 then c.cohort_country
+	ELSE NULL
+	END as country_fix,
+	quantity
+from customers as c 
+left join cards as ca
+on c.surr_id = ca.cust_surr_id
+left join transactions as t
+on t.pan_no = ca.pan_no
+where tran_date >= '04-01-2022' and tran_date < '04-01-2024'
+and t.product_name IN 
+('DIESEL','UNLEADED','PREMIUM DIESEL',
+'PREMIUM UNLEADED','SUPER UNLEADED')
+and t.deleted_date is null
+and country_fix is not null
+and country_fix NOT IN ('US','Australia')
+and start_date < '04-01-2023'
+and tran_month is not null),
+FY23 as(
+with s1 as (
+select 
+	cust_surr_id,
+	date_trunc('month',tran_date) as tran_month,
+	max(tran_date) over(partition by cust_surr_id) as max_trandate
+from transactions 
+where tran_date >= '04-01-2022' and tran_date < '04-01-2023'
+and product_name IN 
+('DIESEL','UNLEADED','PREMIUM DIESEL',
+'PREMIUM UNLEADED','SUPER UNLEADED')
+and deleted_date is null),
+s2 as (
+select
+	surr_id
+from customer_isoweekly_account_status
+where fuel_live_account = 'TRUE'
+and reporting_period = '202313'),
+s3 as (
+select
+	s1.cust_surr_id,
+	s2.surr_id as live_id,
+	s1.max_trandate,
+	case when s1.cust_surr_id = live_id then 'Live'
+	else 'Stop'
+	end as Account_status
+from s1
+left join s2
+on s1.cust_surr_id = s2.surr_id),
+s4 as (
+with reason_ref_on as
+(SELECT 
+ 	*
+from cr_references
+WHERE type = 'STOP PRIMARY REASON'
+AND language = 0),
+csr as (
+select
+	distinct cust_surr_id,
+	date_actioned,
+	primary_reason
+from cr_stop_request
+where stop_flag = 'True'
+and stop_type = 'A'
+and date_actioned < '04-03-2023'),
+csr1 as (
+select
+	distinct csr.cust_surr_id ,
+	csr.date_actioned,
+	COALESCE(reason_ref_on.description, 'UNKNOWN') AS reason
+from csr
+left join reason_ref_on
+on csr.primary_reason = reason_ref_on.code),
+csr2 as (
+select
+	distinct cust_surr_id,
+	reason,
+	date_actioned,
+	max(date_actioned) over(partition by cust_surr_id) as latest_action_date
+from csr1)
+select
+	cust_surr_id,
+	case WHEN reason IN 
+('Adverse Credit Information',
+'Bank Information',
+'Cancel Sales Contact',
+'Credit Alert',
+'Credit Information',
+'Credit Monitoring (Weekend)',
+'Credit Release',
+'Customer has insufficient stock',
+'Customer has purchased sufficient stock',
+'Debt on other fuel card',
+'Deposit Release',
+'Direct Debit Returned',
+'Exceeded Credit Limit',
+'Hotcards',
+'Industry Information',
+'Overdue non-DD Payment',
+'Payment Release',
+'Potential Fraud',
+'Request from Credit',
+'Request from Distributor',
+'Status Change',
+'Unable to contact')
+THEN 'Business Stop'
+WHEN reason IN 
+('Customer agreed to reinstate',
+'Customer Request',
+'Customer would like to re-use there account',
+'DDM Cancelled',
+'Deceased',
+'Insufficient Network Coverage',
+'Lack of communication',
+'Maintenance Request',
+'Not Specified',
+'Other',
+'Out of business/No longer trading',
+'Payment Terms',
+'Price',
+'Product swap',
+'Request from Customer',
+'Request from Customer Services',
+'null',
+'UNKNOWN')
+then 'Customer Stop'
+when reason is null then 'Customer Stop'
+end as Stop_type
+from csr2
+where date_actioned = latest_action_date)
+select
+	distinct s3.cust_surr_id,
+	s3.max_trandate,
+	s3.Account_status,
+	case when s3.Account_status = 'Stop' then coalesce(s4.stop_type,'Customer Stop')
+	else stop_type 
+	end as stoptype
+from s3
+left join s4
+on s3.cust_surr_id = s4.cust_surr_id and Account_status = 'Stop')
+select
+	FY24.cust_surr_id,
+	FY24.tran_month,
+	FY24.start_month,
+	FY24.country_fix,
+	sum(FY24.quantity) as volume,
+	FY23.max_trandate,
+	FY23.Account_status,
+	FY23.stoptype
+from FY24
+left join FY23
+on FY24.cust_surr_id = FY23.cust_surr_id
+group by
+	FY24.cust_surr_id,
+	FY24.tran_month,
+	FY24.start_month,
+	FY24.country_fix,
+	FY23.max_trandate,
+	FY23.Account_status,
+	FY23.stoptype
