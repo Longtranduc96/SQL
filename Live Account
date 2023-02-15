@@ -1,0 +1,64 @@
+with live_status as(
+with s1 as (
+select 	reporting_period,
+       	surr_id,
+       	case when fuel_live_account = 'TRUE' then '1'
+       	else '0'
+       	end as status
+from 	customer_isoweekly_account_status
+where 	fuel_live_account = 'TRUE'),
+s2 as (
+select 	date_trunc('month',caldate) as calmonth,
+       	isowk
+from 	calendar
+where 	caldate in (select max(caldate)
+                   	from calendar
+                   	group by date_part('month',caldate),date_part(year,caldate))),
+s3 as (
+select 	surr_id,
+       	date_trunc('month',start_date) as start_month,
+       	cohort_country
+from customers
+where cohort_account_type = 'PAYGO')
+select
+	s2.calmonth,
+	s1.surr_id,
+	s3.start_month,
+	s1.status,
+	case when cohort_country = 'Northern Ireland' then 'Ireland'
+	when cohort_country = 'Sweden' then 'Scandinavia'
+	when cohort_country = 'Denmark' then 'Scandinavia'
+	else cohort_country
+	end as country_fix
+from s1 
+inner join s2 
+on s1.reporting_period = s2.isowk
+left join s3
+on s1.surr_id = s3.surr_id
+where country_fix NOT IN ('US','Australia')
+and s2.calmonth >= '04-01-2022' and s2.calmonth < '04-01-2024'),
+transactionFY as (
+select
+	*
+from transactions
+where tran_date >= '04-01-2022' and tran_date < '04-01-2024'
+and product_name IN 
+('DIESEL','UNLEADED','PREMIUM DIESEL',
+'PREMIUM UNLEADED','SUPER UNLEADED')
+and deleted_date is null)
+select
+	l.calmonth,
+	l.surr_id,
+	l.start_month,
+	l.status,
+	l.country_fix,
+	sum(t.quantity) as volume
+from live_status as l
+left join transactionFY as t
+on l.surr_id = t.cust_surr_id and l.calmonth = date_trunc('month',t.tran_date)
+group by
+	l.surr_id,
+	l.start_month,
+	l.status,
+	l.country_fix,
+	l.calmonth
